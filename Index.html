@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Integralia - 2.5D Engine Test</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; }
+        canvas { display: block; }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: monospace;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <b>Controls:</b><br>
+        WASD - Move Character<br>
+        Left Click + Drag - Orbit Camera<br>
+        Scroll - Zoom
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // --- 1. SCENE SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a1a);
+        
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
+
+        // --- 2. ENVIRONMENT (The Dungeon) ---
+        // A simple 1=Wall, 0=Floor layout
+        const map = [
+            [1,1,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,0,1,0,0,0,0,1],
+            [1,0,1,1,0,1,0,1,1,0,1],
+            [1,0,1,0,0,0,0,0,1,0,1],
+            [1,0,1,0,1,1,1,0,1,0,1],
+            [1,0,0,0,0,0,0,0,0,0,1],
+            [1,1,1,1,1,1,1,1,1,1,1]
+        ];
+
+        const tileSize = 2;
+        const wallHeight = 3;
+        const walls = [];
+        const wallBoxes = [];
+
+        // Floor Grid
+        const gridHelper = new THREE.GridHelper(22, 11, 0x444444, 0x222222);
+        gridHelper.position.y = -0.01; // slightly below 0 to prevent z-fighting
+        scene.add(gridHelper);
+
+        // Generate Walls
+        const wallGeo = new THREE.BoxGeometry(tileSize, wallHeight, tileSize);
+        
+        for (let z = 0; z < map.length; z++) {
+            for (let x = 0; x < map[z].length; x++) {
+                if (map[z][x] === 1) {
+                    // Unique material per wall so they can go transparent individually
+                    const wallMat = new THREE.MeshLambertMaterial({ 
+                        color: 0x555566, 
+                        transparent: true, 
+                        opacity: 1.0 
+                    });
+                    const wall = new THREE.Mesh(wallGeo, wallMat);
+                    
+                    // Center the map at 0,0
+                    const posX = (x - map[0].length / 2) * tileSize + (tileSize / 2);
+                    const posZ = (z - map.length / 2) * tileSize + (tileSize / 2);
+                    
+                    wall.position.set(posX, wallHeight / 2, posZ);
+                    scene.add(wall);
+                    walls.push(wall);
+                    
+                    // Store bounding box for collision detection
+                    wallBoxes.push(new THREE.Box3().setFromObject(wall));
+                }
+            }
+        }
+
+        // --- 3. THE PLAYER (2D Billboarded Sprite) ---
+        // Create a canvas texture for the sprite (an Integral symbol)
+        const canvas = document.createElement('canvas');
+        canvas.width = 128; canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#00ffcc';
+        ctx.font = 'bold 100px serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('∫', 64, 64);
+
+        const spriteTexture = new THREE.CanvasTexture(canvas);
+        const spriteMaterial = new THREE.SpriteMaterial({ map: spriteTexture, color: 0xffffff });
+        const player = new THREE.Sprite(spriteMaterial);
+        player.scale.set(1.5, 1.5, 1);
+        player.position.set(0, 0.75, 0); // Start in middle of a room
+        scene.add(player);
+
+        // Player collision box (slightly smaller than a tile)
+        const playerSize = 0.8; 
+        const playerBox = new THREE.Box3();
+
+        // --- 4. CAMERA & CONTROLS ---
+        camera.position.set(0, 10, 10); // 45-degree angle offset
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.target.copy(player.position);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxPolarAngle = Math.PI / 2 - 0.1; // Don't go below floor
+
+        // --- 5. INPUT HANDLING (WASD) ---
+        const keys = { w: false, a: false, s: false, d: false };
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = false;
+        });
+
+        // --- 6. MAIN GAME LOOP ---
+        const clock = new THREE.Clock();
+        const speed = 5.0;
+        const raycaster = new THREE.Raycaster();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            // --- Camera-Relative Movement Math ---
+            const camForward = new THREE.Vector3();
+            camera.getWorldDirection(camForward);
+            camForward.y = 0; // Flatten to floor
+            camForward.normalize();
+
+            const camRight = new THREE.Vector3();
+            camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
+
+            let moveX = 0;
+            let moveZ = 0;
+
+            if (keys.w) { moveX += camForward.x; moveZ += camForward.z; }
+            if (keys.s) { moveX -= camForward.x; moveZ -= camForward.z; }
+            if (keys.a) { moveX -= camRight.x; moveZ -= camRight.z; }
+            if (keys.d) { moveX += camRight.x; moveZ += camRight.z; }
+
+            // Normalize diagonal movement speed
+            if (moveX !== 0 || moveZ !== 0) {
+                const moveVec = new THREE.Vector2(moveX, moveZ).normalize();
+                moveX = moveVec.x * speed * delta;
+                moveZ = moveVec.y * speed * delta;
+            }
+
+            // --- Wall Sliding Collision Detection ---
+            const nextPos = player.position.clone();
+            
+            // Test X axis independently
+            nextPos.x += moveX;
+            playerBox.setFromCenterAndSize(nextPos, new THREE.Vector3(playerSize, 1, playerSize));
+            let hitX = wallBoxes.some(box => box.intersectsBox(playerBox));
+            if (hitX) nextPos.x -= moveX; // Revert X if hit
+
+            // Test Z axis independently
+            nextPos.z += moveZ;
+            playerBox.setFromCenterAndSize(nextPos, new THREE.Vector3(playerSize, 1, playerSize));
+            let hitZ = wallBoxes.some(box => box.intersectsBox(playerBox));
+            if (hitZ) nextPos.z -= moveZ; // Revert Z if hit
+
+            // Calculate how much we actually moved
+            const deltaPos = new THREE.Vector3(
+                nextPos.x - player.position.x,
+                0,
+                nextPos.z - player.position.z
+            );
+
+            // Apply movement to player, camera, and camera target
+            player.position.copy(nextPos);
+            camera.position.add(deltaPos); 
+            controls.target.add(deltaPos);
+
+            // --- Raycast Occlusion (Transparent Walls) ---
+            // Reset all walls to opaque
+            walls.forEach(w => w.material.opacity = 1.0);
+
+            // Shoot ray from camera to player
+            const direction = new THREE.Vector3().subVectors(player.position, camera.position).normalize();
+            raycaster.set(camera.position, direction);
+            
+            const distanceToPlayer = camera.position.distanceTo(player.position);
+            const intersects = raycaster.intersectObjects(walls);
+
+            for (let i = 0; i < intersects.length; i++) {
+                // If the wall is closer to the camera than the player is
+                if (intersects[i].distance < distanceToPlayer) {
+                    intersects[i].object.material.opacity = 0.2; // Make it see-through
+                }
+            }
+
+            // Update controls and render
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // Handle window resizing
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Start loop
+        animate();
+    </script>
+</body>
+</html>
