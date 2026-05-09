@@ -25,14 +25,14 @@
         }
         .toggle-btn:hover { background: #ffcc00; }
 
-        /* HUD Elements (Initially hidden or specific to view) */
+        /* HUD Elements */
         #crosshair {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             color: rgba(255, 50, 50, 0.8); font-size: 24px; font-weight: bold; pointer-events: none;
-            display: none; /* Shows only in FPV */
+            display: none; 
         }
         #hud-label {
-            position: absolute; top: 120px; left: 10px; font-size: 14px; color: #00ffcc; 
+            position: absolute; top: 135px; left: 10px; font-size: 14px; color: #00ffcc; 
             pointer-events: none; background: rgba(0,0,0,0.5); padding: 5px; border-radius: 3px;
         }
         
@@ -63,8 +63,8 @@
     <div id="main-view">
         <div id="ui-hint">
             <b>Controls:</b><br>
-            WASD - Move Character<br>
-            Left Click + Drag - Orbit Camera<br>
+            WASD - Move & Strafe<br>
+            Mouse - Look (in FPV) / Orbit (in 3rd Person)<br>
             Keys 1 & 2 - Swing Weapons<br>
             <button class="toggle-btn" onclick="toggleCamera()">Toggle Camera (V)</button>
         </div>
@@ -102,21 +102,59 @@
         renderer.setSize(mainDiv.clientWidth, mainDiv.clientHeight);
         mainDiv.appendChild(renderer.domElement);
 
-        // Orbit Camera (Third Person)
         const orbitCamera = new THREE.PerspectiveCamera(45, mainDiv.clientWidth / mainDiv.clientHeight, 0.1, 1000);
-        
-        // FPV Camera (First Person)
         const fpvCamera = new THREE.PerspectiveCamera(60, mainDiv.clientWidth / mainDiv.clientHeight, 0.1, 1000);
+        scene.add(fpvCamera); // Add FPV camera to scene independently
         
-        // View State
         let isFPV = false;
         let activeCamera = orbitCamera;
+        let fpvPitch = 0;
+        let fpvYaw = 0;
 
+        // Pointer Lock & Camera Toggle Logic
         window.toggleCamera = function() {
-            isFPV = !isFPV;
-            activeCamera = isFPV ? fpvCamera : orbitCamera;
-            document.getElementById('crosshair').style.display = isFPV ? 'block' : 'none';
+            if (!isFPV) {
+                document.body.requestPointerLock();
+            } else {
+                document.exitPointerLock();
+            }
         };
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === document.body) {
+                // Enter FPV
+                isFPV = true;
+                activeCamera = fpvCamera;
+                document.getElementById('crosshair').style.display = 'block';
+                controls.enabled = false; // Disable orbit controls
+                
+                // Align FPV camera to roughly match where the orbit camera was looking
+                const euler = new THREE.Euler().setFromQuaternion(orbitCamera.quaternion, 'YXZ');
+                fpvYaw = euler.y;
+                fpvPitch = 0;
+                fpvCamera.quaternion.setFromEuler(new THREE.Euler(fpvPitch, fpvYaw, 0, 'YXZ'));
+            } else {
+                // Exit FPV (e.g., user pressed Esc)
+                isFPV = false;
+                activeCamera = orbitCamera;
+                document.getElementById('crosshair').style.display = 'none';
+                controls.enabled = true; // Re-enable orbit controls
+            }
+        });
+
+        // Mouse Movement Listener for FPS Look
+        document.addEventListener('mousemove', (event) => {
+            if (isFPV && document.pointerLockElement === document.body) {
+                fpvYaw -= event.movementX * 0.002;
+                fpvPitch -= event.movementY * 0.002;
+                
+                // Clamp pitch so you can't look backwards through your own legs
+                const PI_2 = Math.PI / 2 - 0.05;
+                fpvPitch = Math.max(-PI_2, Math.min(PI_2, fpvPitch));
+
+                fpvCamera.quaternion.setFromEuler(new THREE.Euler(fpvPitch, fpvYaw, 0, 'YXZ'));
+            }
+        });
 
         // Lighting
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -160,7 +198,6 @@
                     walls.push(wall);
                     wallBoxes.push(new THREE.Box3().setFromObject(wall));
                 } else {
-                    // Record floor tiles as valid spawn points
                     validSpawnPoints.push(new THREE.Vector3(posX, 1, posZ));
                 }
             }
@@ -186,19 +223,15 @@
             sprite.material.map.needsUpdate = true;
         }
 
-        // Make it a "little block"
         const skeletonGeo = new THREE.BoxGeometry(0.8, 0.8, 0.8);
         const skeletonMat = new THREE.MeshLambertMaterial({ color: 0xbbbbbb });
         const skeleton = new THREE.Mesh(skeletonGeo, skeletonMat);
         
-        // Dynamic Spawning Logic
-        // Remove points too close to the center (0,0) where the player spawns
         const safeSpawns = validSpawnPoints.filter(p => p.distanceTo(new THREE.Vector3(0,1,0)) > 3);
         const randomSpawn = safeSpawns[Math.floor(Math.random() * safeSpawns.length)];
         
         skeleton.position.copy(randomSpawn); 
-        skeleton.position.y = 0.4; // Rest on floor (half of 0.8 height)
-        
+        skeleton.position.y = 0.4; 
         skeleton.userData = { state: 'raw', power: 4 };
 
         const nameLabel = createTextSprite(`x^${skeleton.userData.power}`);
@@ -221,10 +254,6 @@
         player.scale.set(1.5, 1.5, 1);
         player.position.set(0, 0.75, 0); 
         scene.add(player);
-
-        // Attach FPV Camera to player
-        player.add(fpvCamera);
-        fpvCamera.position.set(0, 0, 0);
 
         // FPV Weapon Model
         const weaponGeo = new THREE.BoxGeometry(0.1, 0.1, 1.0);
@@ -274,7 +303,6 @@
 
             weaponModel.material.color.setHex(type === 'mace' ? 0xaaaaaa : 0x880000);
 
-            // Raycast from whichever camera is currently active
             raycaster.setFromCamera(new THREE.Vector2(0, 0), activeCamera);
             const intersects = raycaster.intersectObject(skeleton);
 
@@ -301,9 +329,8 @@
                         skeleton.userData.state = 'integrated';
                         updateTextSprite(skeleton.userData.label, `1/${newP}x^${newP}`);
                         
-                        // Visually crumble the little block
                         skeleton.scale.set(1, 0.5, 1);
-                        skeleton.position.y -= 0.2; // Keep it on the floor when crushed
+                        skeleton.position.y -= 0.2; 
                         skeleton.material.color.setHex(0x555555); 
                         
                         hudLabel.innerText = "POWER RULE APPLIED. AWAITING +C.";
@@ -330,7 +357,10 @@
             requestAnimationFrame(animate);
             const delta = clock.getDelta();
 
-            // Movement logic (Always relative to active camera)
+            // Sync FPV camera position to the player's position
+            fpvCamera.position.copy(player.position);
+
+            // Movement logic relative to active camera
             const camForward = new THREE.Vector3();
             activeCamera.getWorldDirection(camForward);
             camForward.y = 0; camForward.normalize();
@@ -364,11 +394,6 @@
             player.position.copy(nextPos);
             orbitCamera.position.add(deltaPos); 
             controls.target.add(deltaPos);
-
-            if (moveX !== 0 || moveZ !== 0) {
-                const lookTarget = new THREE.Vector3(player.position.x + moveX, player.position.y, player.position.z + moveZ);
-                fpvCamera.lookAt(lookTarget);
-            }
 
             if (isAttacking) {
                 attackTimer += delta * 15;
