@@ -1,31 +1,90 @@
+//Alpha 1.0 Copyright JP Hansen 5-8-2026
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Integralia - 2.5D Engine Test</title>
+    <title>Integralia - Calculus Combat Engine</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #111; }
-        canvas { display: block; }
-        #ui {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            color: white;
-            font-family: monospace;
-            background: rgba(0,0,0,0.7);
-            padding: 10px;
-            border-radius: 5px;
-            pointer-events: none;
+        body { 
+            margin: 0; overflow: hidden; display: flex; 
+            background-color: #111; color: white; font-family: monospace;
+        }
+        /* Left Side: 75% Orbit View */
+        #main-view { 
+            width: 75vw; height: 100vh; position: relative; 
+        }
+        #ui-hint {
+            position: absolute; top: 10px; left: 10px;
+            background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: none;
+            z-index: 10;
+        }
+        
+        /* Right Side: 25% Card & Combat Zone */
+        #card-zone { 
+            width: 25vw; height: 100vh; display: flex; flex-direction: column; 
+            background: #1a1a1a; border-left: 4px solid #333;
+        }
+        
+        /* First Person Viewport */
+        #fpv-container { 
+            height: 35vh; width: 100%; position: relative; background: #000; 
+            border-bottom: 4px solid #333; overflow: hidden;
+        }
+        #fpv-reticle {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: rgba(255, 50, 50, 0.8); font-size: 24px; font-weight: bold; pointer-events: none;
+        }
+        #viewport-label {
+            position: absolute; top: 5px; left: 5px; font-size: 10px; color: #00ffcc; pointer-events: none;
+        }
+
+        /* The Deck / Hand */
+        #card-hand { 
+            flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto;
+        }
+        .card { 
+            background: #2a2a2a; border: 2px solid #555; padding: 15px; border-radius: 8px; 
+            cursor: pointer; transition: all 0.2s; user-select: none;
+        }
+        .card.active { border-color: #ffaa00; background: #333; transform: scale(1.02); }
+        .card-title { font-size: 18px; font-weight: bold; color: #ffaa00; margin-bottom: 5px;}
+        .card-desc { font-size: 12px; color: #ccc; }
+        .key-hint { 
+            display: inline-block; background: #555; color: white; padding: 2px 6px; 
+            border-radius: 4px; font-size: 10px; margin-right: 5px;
         }
     </style>
 </head>
 <body>
-    <div id="ui">
-        <b>Controls:</b><br>
-        WASD - Move Character<br>
-        Left Click + Drag - Orbit Camera<br>
-        Scroll - Zoom
+
+    <div id="main-view">
+        <div id="ui-hint">
+            <b>Controls:</b><br>
+            WASD - Move Character<br>
+            Left Click + Drag - Orbit Camera<br>
+            Keys 1 & 2 - Swing Weapons
+        </div>
+    </div>
+
+    <div id="card-zone">
+        <div id="fpv-container">
+            <div id="viewport-label">TARGET SENSOR [ACTIVE]</div>
+            <div id="fpv-reticle">+</div>
+        </div>
+        <div id="card-hand">
+            <h3 style="margin-top:0; border-bottom: 1px solid #555; padding-bottom: 10px;">Combat Hand</h3>
+            
+            <div class="card" id="card-mace" onclick="triggerAttack('mace')">
+                <div class="card-title"><span class="key-hint">1</span> Integration Mace</div>
+                <div class="card-desc">Applies Power Rule.<br>1st Hit: Integrates.<br>2nd Hit: Adds +C and destroys.</div>
+            </div>
+
+            <div class="card" id="card-bow" onclick="triggerAttack('bow')">
+                <div class="card-title"><span class="key-hint">2</span> Blood Needle Bow</div>
+                <div class="card-desc">Fires physical projectiles. No effect on mathematical structure.</div>
+            </div>
+        </div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -36,10 +95,21 @@
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x1a1a1a);
         
-        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        // --- 2. DUAL CAMERAS & RENDERERS ---
+        const mainDiv = document.getElementById('main-view');
+        const fpvDiv = document.getElementById('fpv-container');
+
+        // Orbit Camera
+        const camera = new THREE.PerspectiveCamera(45, mainDiv.clientWidth / mainDiv.clientHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
+        renderer.setSize(mainDiv.clientWidth, mainDiv.clientHeight);
+        mainDiv.appendChild(renderer.domElement);
+
+        // FPV Camera
+        const fpvCamera = new THREE.PerspectiveCamera(60, fpvDiv.clientWidth / fpvDiv.clientHeight, 0.1, 1000);
+        const fpvRenderer = new THREE.WebGLRenderer({ antialias: true });
+        fpvRenderer.setSize(fpvDiv.clientWidth, fpvDiv.clientHeight);
+        fpvDiv.appendChild(fpvRenderer.domElement);
 
         // Lighting
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -48,8 +118,7 @@
         dirLight.position.set(10, 20, 10);
         scene.add(dirLight);
 
-        // --- 2. ENVIRONMENT (The Dungeon) ---
-        // A simple 1=Wall, 0=Floor layout
+        // --- 3. ENVIRONMENT & WALLS ---
         const map = [
             [1,1,1,1,1,1,1,1,1,1,1],
             [1,0,0,0,0,1,0,0,0,0,1],
@@ -65,169 +134,279 @@
         const walls = [];
         const wallBoxes = [];
 
-        // Floor Grid
         const gridHelper = new THREE.GridHelper(22, 11, 0x444444, 0x222222);
-        gridHelper.position.y = -0.01; // slightly below 0 to prevent z-fighting
+        gridHelper.position.y = -0.01; 
         scene.add(gridHelper);
 
-        // Generate Walls
         const wallGeo = new THREE.BoxGeometry(tileSize, wallHeight, tileSize);
-        
         for (let z = 0; z < map.length; z++) {
             for (let x = 0; x < map[z].length; x++) {
                 if (map[z][x] === 1) {
-                    // Unique material per wall so they can go transparent individually
-                    const wallMat = new THREE.MeshLambertMaterial({ 
-                        color: 0x555566, 
-                        transparent: true, 
-                        opacity: 1.0 
-                    });
+                    const wallMat = new THREE.MeshLambertMaterial({ color: 0x555566, transparent: true, opacity: 1.0 });
                     const wall = new THREE.Mesh(wallGeo, wallMat);
-                    
-                    // Center the map at 0,0
                     const posX = (x - map[0].length / 2) * tileSize + (tileSize / 2);
                     const posZ = (z - map.length / 2) * tileSize + (tileSize / 2);
-                    
                     wall.position.set(posX, wallHeight / 2, posZ);
                     scene.add(wall);
                     walls.push(wall);
-                    
-                    // Store bounding box for collision detection
                     wallBoxes.push(new THREE.Box3().setFromObject(wall));
                 }
             }
         }
 
-        // --- 3. THE PLAYER (2D Billboarded Sprite) ---
-        // Create a canvas texture for the sprite (an Integral symbol)
-        const canvas = document.createElement('canvas');
-        canvas.width = 128; canvas.height = 128;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#00ffcc';
-        ctx.font = 'bold 100px serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('∫', 64, 64);
+        // --- 4. SKELETON ENEMY (The Math Target) ---
+        // Helper to create floating text
+        function createTextSprite(text) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffaa00';
+            ctx.font = 'bold 40px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, 128, 64);
+            const texture = new THREE.CanvasTexture(canvas);
+            const spriteMat = new THREE.SpriteMaterial({ map: texture, depthTest: false });
+            return new THREE.Sprite(spriteMat);
+        }
 
-        const spriteTexture = new THREE.CanvasTexture(canvas);
-        const spriteMaterial = new THREE.SpriteMaterial({ map: spriteTexture, color: 0xffffff });
-        const player = new THREE.Sprite(spriteMaterial);
+        function updateTextSprite(sprite, text) {
+            const ctx = sprite.material.map.image.getContext('2d');
+            ctx.clearRect(0, 0, 256, 128);
+            ctx.fillText(text, 128, 64);
+            sprite.material.map.needsUpdate = true;
+        }
+
+        const skeletonGeo = new THREE.BoxGeometry(1, 2, 1);
+        const skeletonMat = new THREE.MeshLambertMaterial({ color: 0xbbbbbb });
+        const skeleton = new THREE.Mesh(skeletonGeo, skeletonMat);
+        skeleton.position.set(0, 1, -4); 
+        
+        // Math State Data
+        skeleton.userData = { 
+            state: 'raw', 
+            power: 4 // e.g., x^4
+        };
+
+        // Add Floating Text Name
+        const nameLabel = createTextSprite(`x^${skeleton.userData.power}`);
+        nameLabel.position.y = 1.5; // Float above head
+        nameLabel.scale.set(2, 1, 1);
+        skeleton.add(nameLabel);
+        skeleton.userData.label = nameLabel;
+
+        scene.add(skeleton);
+
+        // --- 5. THE PLAYER (2D Billboard + FPV Camera) ---
+        const pCanvas = document.createElement('canvas');
+        pCanvas.width = 128; pCanvas.height = 128;
+        const pCtx = pCanvas.getContext('2d');
+        pCtx.fillStyle = '#00ffcc';
+        pCtx.font = 'bold 100px serif';
+        pCtx.textAlign = 'center'; pCtx.textBaseline = 'middle';
+        pCtx.fillText('∫', 64, 64);
+
+        const player = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(pCanvas) }));
         player.scale.set(1.5, 1.5, 1);
-        player.position.set(0, 0.75, 0); // Start in middle of a room
+        player.position.set(0, 0.75, 0); 
         scene.add(player);
 
-        // Player collision box (slightly smaller than a tile)
+        // Attach FPV Camera
+        player.add(fpvCamera);
+        fpvCamera.position.set(0, 0, 0);
+
+        // FPV Weapon Model
+        const weaponGeo = new THREE.BoxGeometry(0.1, 0.1, 1.0);
+        const weaponMat = new THREE.MeshLambertMaterial({ color: 0xaaaaaa });
+        const weaponModel = new THREE.Mesh(weaponGeo, weaponMat);
+        weaponModel.position.set(0.3, -0.2, -0.5); 
+        fpvCamera.add(weaponModel);
+
         const playerSize = 0.8; 
         const playerBox = new THREE.Box3();
 
-        // --- 4. CAMERA & CONTROLS ---
-        camera.position.set(0, 10, 10); // 45-degree angle offset
+        // --- 6. CAMERA CONTROLS ---
+        camera.position.set(0, 10, 10);
         const controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.target.copy(player.position);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
-        controls.maxPolarAngle = Math.PI / 2 - 0.1; // Don't go below floor
+        controls.maxPolarAngle = Math.PI / 2 - 0.1; 
 
-        // --- 5. INPUT HANDLING (WASD) ---
+        // --- 7. INPUT & WEAPON LOGIC ---
         const keys = { w: false, a: false, s: false, d: false };
+        const raycaster = new THREE.Raycaster();
+        let isAttacking = false;
+        let attackTimer = 0;
+
         window.addEventListener('keydown', (e) => {
-            if (keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = true;
+            const k = e.key.toLowerCase();
+            if (keys.hasOwnProperty(k)) keys[k] = true;
+            if (k === '1') triggerAttack('mace');
+            if (k === '2') triggerAttack('bow');
         });
         window.addEventListener('keyup', (e) => {
-            if (keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = false;
+            const k = e.key.toLowerCase();
+            if (keys.hasOwnProperty(k)) keys[k] = false;
         });
 
-        // --- 6. MAIN GAME LOOP ---
+        window.triggerAttack = function(type) {
+            if (isAttacking) return;
+            isAttacking = true;
+            attackTimer = 0;
+
+            // UI Feedback
+            document.getElementById('card-mace').classList.remove('active');
+            document.getElementById('card-bow').classList.remove('active');
+            document.getElementById(`card-${type}`).classList.add('active');
+
+            // Set Weapon Color (Grey for Mace, Red for Blood Bow)
+            weaponModel.material.color.setHex(type === 'mace' ? 0xaaaaaa : 0x880000);
+
+            // Raycast for Hit Detection
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), fpvCamera);
+            const intersects = raycaster.intersectObject(skeleton);
+
+            if (intersects.length > 0 && intersects[0].distance < 8) {
+                const hitPoint = intersects[0].point;
+                const normal = intersects[0].face.normal;
+
+                if (type === 'bow') {
+                    // Arrow logic: Just stick an arrow into the mesh
+                    const arrow = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.02, 0.02, 0.8),
+                        new THREE.MeshBasicMaterial({color: 0xff0000})
+                    );
+                    
+                    // Convert hit point to skeleton's local space
+                    skeleton.worldToLocal(hitPoint);
+                    arrow.position.copy(hitPoint);
+                    
+                    // Orient arrow to stick straight out from the face it hit
+                    arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+                    // Push it slightly in so it looks embedded
+                    arrow.translateY(0.2); 
+                    
+                    skeleton.add(arrow);
+                    document.getElementById('viewport-label').innerText = "ARROW EMBEDDED. NO MATH EFFECT.";
+                } 
+                else if (type === 'mace') {
+                    // Mace Logic: Power Rule & +C
+                    if (skeleton.userData.state === 'raw') {
+                        // Integrate!
+                        let p = skeleton.userData.power;
+                        let newP = p + 1;
+                        skeleton.userData.state = 'integrated';
+                        
+                        // Update text
+                        updateTextSprite(skeleton.userData.label, `1/${newP}x^${newP}`);
+                        
+                        // Visually crumble
+                        skeleton.scale.set(1, 0.6, 1);
+                        skeleton.material.color.setHex(0x555555); // Darken/crack
+                        
+                        document.getElementById('viewport-label').innerText = "POWER RULE APPLIED. AWAITING +C.";
+                    } 
+                    else if (skeleton.userData.state === 'integrated') {
+                        // Destroy!
+                        updateTextSprite(skeleton.userData.label, "+ C");
+                        skeleton.scale.set(1, 0.1, 1); // Crushed flat
+                        
+                        document.getElementById('viewport-label').innerText = "CONSTANT ADDED. FUNCTION DEFEATED.";
+                        
+                        // Remove after a brief moment so player sees the +C
+                        setTimeout(() => { scene.remove(skeleton); }, 1000);
+                    }
+                }
+            }
+        };
+
+        // --- 8. MAIN GAME LOOP ---
         const clock = new THREE.Clock();
         const speed = 5.0;
-        const raycaster = new THREE.Raycaster();
 
         function animate() {
             requestAnimationFrame(animate);
             const delta = clock.getDelta();
 
-            // --- Camera-Relative Movement Math ---
+            // Movement relative to Main Camera
             const camForward = new THREE.Vector3();
             camera.getWorldDirection(camForward);
-            camForward.y = 0; // Flatten to floor
-            camForward.normalize();
+            camForward.y = 0; camForward.normalize();
 
             const camRight = new THREE.Vector3();
             camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
 
-            let moveX = 0;
-            let moveZ = 0;
-
+            let moveX = 0; let moveZ = 0;
             if (keys.w) { moveX += camForward.x; moveZ += camForward.z; }
             if (keys.s) { moveX -= camForward.x; moveZ -= camForward.z; }
             if (keys.a) { moveX -= camRight.x; moveZ -= camRight.z; }
             if (keys.d) { moveX += camRight.x; moveZ += camRight.z; }
 
-            // Normalize diagonal movement speed
             if (moveX !== 0 || moveZ !== 0) {
                 const moveVec = new THREE.Vector2(moveX, moveZ).normalize();
                 moveX = moveVec.x * speed * delta;
                 moveZ = moveVec.y * speed * delta;
             }
 
-            // --- Wall Sliding Collision Detection ---
+            // Wall Sliding Collision
             const nextPos = player.position.clone();
             
-            // Test X axis independently
             nextPos.x += moveX;
             playerBox.setFromCenterAndSize(nextPos, new THREE.Vector3(playerSize, 1, playerSize));
-            let hitX = wallBoxes.some(box => box.intersectsBox(playerBox));
-            if (hitX) nextPos.x -= moveX; // Revert X if hit
+            if (wallBoxes.some(box => box.intersectsBox(playerBox))) nextPos.x -= moveX; 
 
-            // Test Z axis independently
             nextPos.z += moveZ;
             playerBox.setFromCenterAndSize(nextPos, new THREE.Vector3(playerSize, 1, playerSize));
-            let hitZ = wallBoxes.some(box => box.intersectsBox(playerBox));
-            if (hitZ) nextPos.z -= moveZ; // Revert Z if hit
+            if (wallBoxes.some(box => box.intersectsBox(playerBox))) nextPos.z -= moveZ; 
 
-            // Calculate how much we actually moved
-            const deltaPos = new THREE.Vector3(
-                nextPos.x - player.position.x,
-                0,
-                nextPos.z - player.position.z
-            );
-
-            // Apply movement to player, camera, and camera target
+            const deltaPos = new THREE.Vector3(nextPos.x - player.position.x, 0, nextPos.z - player.position.z);
             player.position.copy(nextPos);
             camera.position.add(deltaPos); 
             controls.target.add(deltaPos);
 
-            // --- Raycast Occlusion (Transparent Walls) ---
-            // Reset all walls to opaque
-            walls.forEach(w => w.material.opacity = 1.0);
+            // Make FPV Camera look forward relative to movement
+            if (moveX !== 0 || moveZ !== 0) {
+                const lookTarget = new THREE.Vector3(player.position.x + moveX, player.position.y, player.position.z + moveZ);
+                fpvCamera.lookAt(lookTarget);
+            }
 
-            // Shoot ray from camera to player
-            const direction = new THREE.Vector3().subVectors(player.position, camera.position).normalize();
-            raycaster.set(camera.position, direction);
-            
-            const distanceToPlayer = camera.position.distanceTo(player.position);
-            const intersects = raycaster.intersectObjects(walls);
-
-            for (let i = 0; i < intersects.length; i++) {
-                // If the wall is closer to the camera than the player is
-                if (intersects[i].distance < distanceToPlayer) {
-                    intersects[i].object.material.opacity = 0.2; // Make it see-through
+            // Weapon Animation
+            if (isAttacking) {
+                attackTimer += delta * 15;
+                weaponModel.position.z = -0.5 - Math.sin(attackTimer) * 0.4; // Thrust forward
+                if (attackTimer > Math.PI) {
+                    isAttacking = false;
+                    weaponModel.position.z = -0.5;
                 }
             }
 
-            // Update controls and render
+            // Raycast Occlusion
+            walls.forEach(w => w.material.opacity = 1.0);
+            const direction = new THREE.Vector3().subVectors(player.position, camera.position).normalize();
+            raycaster.set(camera.position, direction);
+            const intersects = raycaster.intersectObjects(walls);
+            for (let i = 0; i < intersects.length; i++) {
+                if (intersects[i].distance < camera.position.distanceTo(player.position)) {
+                    intersects[i].object.material.opacity = 0.2;
+                }
+            }
+
             controls.update();
             renderer.render(scene, camera);
+            fpvRenderer.render(scene, fpvCamera);
         }
 
-        // Handle window resizing
         window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.aspect = mainDiv.clientWidth / mainDiv.clientHeight;
             camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setSize(mainDiv.clientWidth, mainDiv.clientHeight);
+
+            fpvCamera.aspect = fpvDiv.clientWidth / fpvDiv.clientHeight;
+            fpvCamera.updateProjectionMatrix();
+            fpvRenderer.setSize(fpvDiv.clientWidth, fpvDiv.clientHeight);
         });
 
-        // Start loop
         animate();
     </script>
 </body>
