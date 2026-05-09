@@ -1,4 +1,3 @@
-//Alpha 1.0 Copyright JP Hansen 5-8-2026
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -10,36 +9,39 @@
             margin: 0; overflow: hidden; display: flex; 
             background-color: #111; color: white; font-family: monospace;
         }
-        /* Left Side: 75% Orbit View */
+        /* Left Side: 75% View */
         #main-view { 
-            width: 75vw; height: 100vh; position: relative; 
+            width: 75vw; height: 100vh; position: relative; background: #000;
         }
         #ui-hint {
             position: absolute; top: 10px; left: 10px;
-            background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: none;
+            background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: auto;
             z-index: 10;
         }
+        .toggle-btn {
+            background: #ffaa00; color: #111; border: none; padding: 5px 10px; 
+            font-family: monospace; font-weight: bold; cursor: pointer; border-radius: 3px;
+            margin-top: 10px; width: 100%;
+        }
+        .toggle-btn:hover { background: #ffcc00; }
+
+        /* HUD Elements (Initially hidden or specific to view) */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: rgba(255, 50, 50, 0.8); font-size: 24px; font-weight: bold; pointer-events: none;
+            display: none; /* Shows only in FPV */
+        }
+        #hud-label {
+            position: absolute; top: 120px; left: 10px; font-size: 14px; color: #00ffcc; 
+            pointer-events: none; background: rgba(0,0,0,0.5); padding: 5px; border-radius: 3px;
+        }
         
-        /* Right Side: 25% Card & Combat Zone */
+        /* Right Side: 25% Card Zone */
         #card-zone { 
             width: 25vw; height: 100vh; display: flex; flex-direction: column; 
             background: #1a1a1a; border-left: 4px solid #333;
         }
         
-        /* First Person Viewport */
-        #fpv-container { 
-            height: 35vh; width: 100%; position: relative; background: #000; 
-            border-bottom: 4px solid #333; overflow: hidden;
-        }
-        #fpv-reticle {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: rgba(255, 50, 50, 0.8); font-size: 24px; font-weight: bold; pointer-events: none;
-        }
-        #viewport-label {
-            position: absolute; top: 5px; left: 5px; font-size: 10px; color: #00ffcc; pointer-events: none;
-        }
-
-        /* The Deck / Hand */
         #card-hand { 
             flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto;
         }
@@ -63,15 +65,14 @@
             <b>Controls:</b><br>
             WASD - Move Character<br>
             Left Click + Drag - Orbit Camera<br>
-            Keys 1 & 2 - Swing Weapons
+            Keys 1 & 2 - Swing Weapons<br>
+            <button class="toggle-btn" onclick="toggleCamera()">Toggle Camera (V)</button>
         </div>
+        <div id="crosshair">+</div>
+        <div id="hud-label">TARGET SENSOR [READY]</div>
     </div>
 
     <div id="card-zone">
-        <div id="fpv-container">
-            <div id="viewport-label">TARGET SENSOR [ACTIVE]</div>
-            <div id="fpv-reticle">+</div>
-        </div>
         <div id="card-hand">
             <h3 style="margin-top:0; border-bottom: 1px solid #555; padding-bottom: 10px;">Combat Hand</h3>
             
@@ -95,21 +96,27 @@
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x1a1a1a);
         
-        // --- 2. DUAL CAMERAS & RENDERERS ---
+        // --- 2. CAMERAS & RENDERER ---
         const mainDiv = document.getElementById('main-view');
-        const fpvDiv = document.getElementById('fpv-container');
-
-        // Orbit Camera
-        const camera = new THREE.PerspectiveCamera(45, mainDiv.clientWidth / mainDiv.clientHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(mainDiv.clientWidth, mainDiv.clientHeight);
         mainDiv.appendChild(renderer.domElement);
 
-        // FPV Camera
-        const fpvCamera = new THREE.PerspectiveCamera(60, fpvDiv.clientWidth / fpvDiv.clientHeight, 0.1, 1000);
-        const fpvRenderer = new THREE.WebGLRenderer({ antialias: true });
-        fpvRenderer.setSize(fpvDiv.clientWidth, fpvDiv.clientHeight);
-        fpvDiv.appendChild(fpvRenderer.domElement);
+        // Orbit Camera (Third Person)
+        const orbitCamera = new THREE.PerspectiveCamera(45, mainDiv.clientWidth / mainDiv.clientHeight, 0.1, 1000);
+        
+        // FPV Camera (First Person)
+        const fpvCamera = new THREE.PerspectiveCamera(60, mainDiv.clientWidth / mainDiv.clientHeight, 0.1, 1000);
+        
+        // View State
+        let isFPV = false;
+        let activeCamera = orbitCamera;
+
+        window.toggleCamera = function() {
+            isFPV = !isFPV;
+            activeCamera = isFPV ? fpvCamera : orbitCamera;
+            document.getElementById('crosshair').style.display = isFPV ? 'block' : 'none';
+        };
 
         // Lighting
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -118,7 +125,7 @@
         dirLight.position.set(10, 20, 10);
         scene.add(dirLight);
 
-        // --- 3. ENVIRONMENT & WALLS ---
+        // --- 3. ENVIRONMENT, WALLS & SPAWN POINTS ---
         const map = [
             [1,1,1,1,1,1,1,1,1,1,1],
             [1,0,0,0,0,1,0,0,0,0,1],
@@ -133,6 +140,7 @@
         const wallHeight = 3;
         const walls = [];
         const wallBoxes = [];
+        const validSpawnPoints = [];
 
         const gridHelper = new THREE.GridHelper(22, 11, 0x444444, 0x222222);
         gridHelper.position.y = -0.01; 
@@ -141,33 +149,34 @@
         const wallGeo = new THREE.BoxGeometry(tileSize, wallHeight, tileSize);
         for (let z = 0; z < map.length; z++) {
             for (let x = 0; x < map[z].length; x++) {
+                const posX = (x - map[0].length / 2) * tileSize + (tileSize / 2);
+                const posZ = (z - map.length / 2) * tileSize + (tileSize / 2);
+
                 if (map[z][x] === 1) {
                     const wallMat = new THREE.MeshLambertMaterial({ color: 0x555566, transparent: true, opacity: 1.0 });
                     const wall = new THREE.Mesh(wallGeo, wallMat);
-                    const posX = (x - map[0].length / 2) * tileSize + (tileSize / 2);
-                    const posZ = (z - map.length / 2) * tileSize + (tileSize / 2);
                     wall.position.set(posX, wallHeight / 2, posZ);
                     scene.add(wall);
                     walls.push(wall);
                     wallBoxes.push(new THREE.Box3().setFromObject(wall));
+                } else {
+                    // Record floor tiles as valid spawn points
+                    validSpawnPoints.push(new THREE.Vector3(posX, 1, posZ));
                 }
             }
         }
 
-        // --- 4. SKELETON ENEMY (The Math Target) ---
-        // Helper to create floating text
+        // --- 4. SKELETON ENEMY (The Math Block) ---
         function createTextSprite(text) {
             const canvas = document.createElement('canvas');
             canvas.width = 256; canvas.height = 128;
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = '#ffaa00';
             ctx.font = 'bold 40px monospace';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
             ctx.fillText(text, 128, 64);
             const texture = new THREE.CanvasTexture(canvas);
-            const spriteMat = new THREE.SpriteMaterial({ map: texture, depthTest: false });
-            return new THREE.Sprite(spriteMat);
+            return new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
         }
 
         function updateTextSprite(sprite, text) {
@@ -177,27 +186,29 @@
             sprite.material.map.needsUpdate = true;
         }
 
-        const skeletonGeo = new THREE.BoxGeometry(1, 2, 1);
+        // Make it a "little block"
+        const skeletonGeo = new THREE.BoxGeometry(0.8, 0.8, 0.8);
         const skeletonMat = new THREE.MeshLambertMaterial({ color: 0xbbbbbb });
         const skeleton = new THREE.Mesh(skeletonGeo, skeletonMat);
-        skeleton.position.set(0, 1, -4); 
         
-        // Math State Data
-        skeleton.userData = { 
-            state: 'raw', 
-            power: 4 // e.g., x^4
-        };
+        // Dynamic Spawning Logic
+        // Remove points too close to the center (0,0) where the player spawns
+        const safeSpawns = validSpawnPoints.filter(p => p.distanceTo(new THREE.Vector3(0,1,0)) > 3);
+        const randomSpawn = safeSpawns[Math.floor(Math.random() * safeSpawns.length)];
+        
+        skeleton.position.copy(randomSpawn); 
+        skeleton.position.y = 0.4; // Rest on floor (half of 0.8 height)
+        
+        skeleton.userData = { state: 'raw', power: 4 };
 
-        // Add Floating Text Name
         const nameLabel = createTextSprite(`x^${skeleton.userData.power}`);
-        nameLabel.position.y = 1.5; // Float above head
+        nameLabel.position.y = 1.0; 
         nameLabel.scale.set(2, 1, 1);
         skeleton.add(nameLabel);
         skeleton.userData.label = nameLabel;
-
         scene.add(skeleton);
 
-        // --- 5. THE PLAYER (2D Billboard + FPV Camera) ---
+        // --- 5. THE PLAYER ---
         const pCanvas = document.createElement('canvas');
         pCanvas.width = 128; pCanvas.height = 128;
         const pCtx = pCanvas.getContext('2d');
@@ -211,7 +222,7 @@
         player.position.set(0, 0.75, 0); 
         scene.add(player);
 
-        // Attach FPV Camera
+        // Attach FPV Camera to player
         player.add(fpvCamera);
         fpvCamera.position.set(0, 0, 0);
 
@@ -225,9 +236,9 @@
         const playerSize = 0.8; 
         const playerBox = new THREE.Box3();
 
-        // --- 6. CAMERA CONTROLS ---
-        camera.position.set(0, 10, 10);
-        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        // --- 6. CONTROLS ---
+        orbitCamera.position.set(0, 10, 10);
+        const controls = new THREE.OrbitControls(orbitCamera, renderer.domElement);
         controls.target.copy(player.position);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
@@ -238,12 +249,14 @@
         const raycaster = new THREE.Raycaster();
         let isAttacking = false;
         let attackTimer = 0;
+        const hudLabel = document.getElementById('hud-label');
 
         window.addEventListener('keydown', (e) => {
             const k = e.key.toLowerCase();
             if (keys.hasOwnProperty(k)) keys[k] = true;
             if (k === '1') triggerAttack('mace');
             if (k === '2') triggerAttack('bow');
+            if (k === 'v') toggleCamera();
         });
         window.addEventListener('keyup', (e) => {
             const k = e.key.toLowerCase();
@@ -255,16 +268,14 @@
             isAttacking = true;
             attackTimer = 0;
 
-            // UI Feedback
             document.getElementById('card-mace').classList.remove('active');
             document.getElementById('card-bow').classList.remove('active');
             document.getElementById(`card-${type}`).classList.add('active');
 
-            // Set Weapon Color (Grey for Mace, Red for Blood Bow)
             weaponModel.material.color.setHex(type === 'mace' ? 0xaaaaaa : 0x880000);
 
-            // Raycast for Hit Detection
-            raycaster.setFromCamera(new THREE.Vector2(0, 0), fpvCamera);
+            // Raycast from whichever camera is currently active
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), activeCamera);
             const intersects = raycaster.intersectObject(skeleton);
 
             if (intersects.length > 0 && intersects[0].distance < 8) {
@@ -272,52 +283,42 @@
                 const normal = intersects[0].face.normal;
 
                 if (type === 'bow') {
-                    // Arrow logic: Just stick an arrow into the mesh
                     const arrow = new THREE.Mesh(
                         new THREE.CylinderGeometry(0.02, 0.02, 0.8),
                         new THREE.MeshBasicMaterial({color: 0xff0000})
                     );
-                    
-                    // Convert hit point to skeleton's local space
                     skeleton.worldToLocal(hitPoint);
                     arrow.position.copy(hitPoint);
-                    
-                    // Orient arrow to stick straight out from the face it hit
                     arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
-                    // Push it slightly in so it looks embedded
                     arrow.translateY(0.2); 
-                    
                     skeleton.add(arrow);
-                    document.getElementById('viewport-label').innerText = "ARROW EMBEDDED. NO MATH EFFECT.";
+                    hudLabel.innerText = "ARROW EMBEDDED. NO MATH EFFECT.";
                 } 
                 else if (type === 'mace') {
-                    // Mace Logic: Power Rule & +C
                     if (skeleton.userData.state === 'raw') {
-                        // Integrate!
                         let p = skeleton.userData.power;
                         let newP = p + 1;
                         skeleton.userData.state = 'integrated';
-                        
-                        // Update text
                         updateTextSprite(skeleton.userData.label, `1/${newP}x^${newP}`);
                         
-                        // Visually crumble
-                        skeleton.scale.set(1, 0.6, 1);
-                        skeleton.material.color.setHex(0x555555); // Darken/crack
+                        // Visually crumble the little block
+                        skeleton.scale.set(1, 0.5, 1);
+                        skeleton.position.y -= 0.2; // Keep it on the floor when crushed
+                        skeleton.material.color.setHex(0x555555); 
                         
-                        document.getElementById('viewport-label').innerText = "POWER RULE APPLIED. AWAITING +C.";
+                        hudLabel.innerText = "POWER RULE APPLIED. AWAITING +C.";
                     } 
                     else if (skeleton.userData.state === 'integrated') {
-                        // Destroy!
                         updateTextSprite(skeleton.userData.label, "+ C");
-                        skeleton.scale.set(1, 0.1, 1); // Crushed flat
+                        skeleton.scale.set(1, 0.1, 1); 
+                        skeleton.position.y -= 0.15;
                         
-                        document.getElementById('viewport-label').innerText = "CONSTANT ADDED. FUNCTION DEFEATED.";
-                        
-                        // Remove after a brief moment so player sees the +C
+                        hudLabel.innerText = "CONSTANT ADDED. FUNCTION DEFEATED.";
                         setTimeout(() => { scene.remove(skeleton); }, 1000);
                     }
                 }
+            } else {
+                hudLabel.innerText = "ATTACK MISSED.";
             }
         };
 
@@ -329,9 +330,9 @@
             requestAnimationFrame(animate);
             const delta = clock.getDelta();
 
-            // Movement relative to Main Camera
+            // Movement logic (Always relative to active camera)
             const camForward = new THREE.Vector3();
-            camera.getWorldDirection(camForward);
+            activeCamera.getWorldDirection(camForward);
             camForward.y = 0; camForward.normalize();
 
             const camRight = new THREE.Vector3();
@@ -349,7 +350,6 @@
                 moveZ = moveVec.y * speed * delta;
             }
 
-            // Wall Sliding Collision
             const nextPos = player.position.clone();
             
             nextPos.x += moveX;
@@ -362,49 +362,45 @@
 
             const deltaPos = new THREE.Vector3(nextPos.x - player.position.x, 0, nextPos.z - player.position.z);
             player.position.copy(nextPos);
-            camera.position.add(deltaPos); 
+            orbitCamera.position.add(deltaPos); 
             controls.target.add(deltaPos);
 
-            // Make FPV Camera look forward relative to movement
             if (moveX !== 0 || moveZ !== 0) {
                 const lookTarget = new THREE.Vector3(player.position.x + moveX, player.position.y, player.position.z + moveZ);
                 fpvCamera.lookAt(lookTarget);
             }
 
-            // Weapon Animation
             if (isAttacking) {
                 attackTimer += delta * 15;
-                weaponModel.position.z = -0.5 - Math.sin(attackTimer) * 0.4; // Thrust forward
+                weaponModel.position.z = -0.5 - Math.sin(attackTimer) * 0.4; 
                 if (attackTimer > Math.PI) {
                     isAttacking = false;
                     weaponModel.position.z = -0.5;
                 }
             }
 
-            // Raycast Occlusion
             walls.forEach(w => w.material.opacity = 1.0);
-            const direction = new THREE.Vector3().subVectors(player.position, camera.position).normalize();
-            raycaster.set(camera.position, direction);
-            const intersects = raycaster.intersectObjects(walls);
-            for (let i = 0; i < intersects.length; i++) {
-                if (intersects[i].distance < camera.position.distanceTo(player.position)) {
-                    intersects[i].object.material.opacity = 0.2;
+            if (!isFPV) {
+                const direction = new THREE.Vector3().subVectors(player.position, orbitCamera.position).normalize();
+                raycaster.set(orbitCamera.position, direction);
+                const intersects = raycaster.intersectObjects(walls);
+                for (let i = 0; i < intersects.length; i++) {
+                    if (intersects[i].distance < orbitCamera.position.distanceTo(player.position)) {
+                        intersects[i].object.material.opacity = 0.2;
+                    }
                 }
+                controls.update();
             }
 
-            controls.update();
-            renderer.render(scene, camera);
-            fpvRenderer.render(scene, fpvCamera);
+            renderer.render(scene, activeCamera);
         }
 
         window.addEventListener('resize', () => {
-            camera.aspect = mainDiv.clientWidth / mainDiv.clientHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(mainDiv.clientWidth, mainDiv.clientHeight);
-
-            fpvCamera.aspect = fpvDiv.clientWidth / fpvDiv.clientHeight;
+            orbitCamera.aspect = mainDiv.clientWidth / mainDiv.clientHeight;
+            orbitCamera.updateProjectionMatrix();
+            fpvCamera.aspect = mainDiv.clientWidth / mainDiv.clientHeight;
             fpvCamera.updateProjectionMatrix();
-            fpvRenderer.setSize(fpvDiv.clientWidth, fpvDiv.clientHeight);
+            renderer.setSize(mainDiv.clientWidth, mainDiv.clientHeight);
         });
 
         animate();
